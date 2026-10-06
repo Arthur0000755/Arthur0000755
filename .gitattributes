@@ -1,0 +1,4 @@
+# Scripts do Windows: guardados exatamente como estão (CRLF e UTF-8 com BOM),
+# para funcionar tanto baixando o .zip quanto copiando o arquivo "raw".
+*.ps1 -text
+*.bat -text

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Otimizador do Windows 10/11 - deixa o sistema mais leve, com menos processos
@@ -13,6 +13,7 @@
       - Bloqueio de apps da Store rodando em segundo plano
       - Efeitos visuais voltados para desempenho
       - Ajustes de desempenho (svchost, energia, Game DVR, atraso de inicialização)
+      - Otimização de disco conforme o tipo (HD mecânico ou SSD)
       - Remoção de aplicativos pré-instalados (bloatware)
 
     Segurança:
@@ -196,6 +197,30 @@ function Confirm-Acao {
 function Get-EspacoLivreGB {
     $disco = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$env:SystemDrive'"
     return [math]::Round($disco.FreeSpace / 1GB, 2)
+}
+
+# Retorna 'HDD', 'SSD' ou 'Desconhecido' para o disco onde o Windows está instalado.
+function Get-TipoDiscoSistema {
+    if ($Script:TipoDisco) { return $Script:TipoDisco }
+    $Script:TipoDisco = 'Desconhecido'
+    try {
+        $letra = $env:SystemDrive.TrimEnd(':')
+        $numero = (Get-Partition -DriveLetter $letra -ErrorAction Stop | Get-Disk -ErrorAction Stop).Number
+        $fisico = Get-PhysicalDisk -ErrorAction Stop | Where-Object { [string]$_.DeviceId -eq [string]$numero }
+        if ($fisico.MediaType -eq 'HDD') { $Script:TipoDisco = 'HDD' }
+        elseif ($fisico.MediaType -eq 'SSD') { $Script:TipoDisco = 'SSD' }
+        elseif ($fisico.SpindleSpeed -gt 0 -and $fisico.SpindleSpeed -lt [uint32]::MaxValue) { $Script:TipoDisco = 'HDD' }
+        elseif ($fisico.BusType -eq 'NVMe') { $Script:TipoDisco = 'SSD' }
+    } catch { }
+    return $Script:TipoDisco
+}
+
+function Get-NomeTipoDisco {
+    switch (Get-TipoDiscoSistema) {
+        'HDD'   { 'HD mecânico' }
+        'SSD'   { 'SSD' }
+        default { 'não identificado' }
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -414,10 +439,16 @@ function Invoke-Servicos {
     if (Confirm-Acao 'Você NÃO usa impressora nem "Imprimir em PDF"? Desativar o Spooler de impressão?' $false) {
         Set-InicioServico -Nome 'Spooler' -Descricao 'Spooler de impressão' -Modo Disabled
     }
-    if (Confirm-Acao 'Desativar a indexação de pesquisa (Windows Search)? Economiza CPU/disco, mas a busca de arquivos fica mais lenta.' $false) {
+    $ehHD = (Get-TipoDiscoSistema) -eq 'HDD'
+    $textoBusca = 'Desativar a indexação de pesquisa (Windows Search)? A busca de arquivos e do Outlook fica mais lenta.'
+    if ($ehHD) { $textoBusca = 'HD mecânico detectado: a indexação costuma deixar o disco em 100%. ' + $textoBusca }
+    # Em HD mecânico o modo automático desativa a indexação; em SSD, não.
+    if (Confirm-Acao $textoBusca $ehHD) {
         Set-InicioServico -Nome 'WSearch' -Descricao 'Windows Search (indexação)' -Modo Disabled
     }
-    if (Confirm-Acao 'Desativar o SysMain (Superfetch)? Recomendado apenas se o Windows estiver em SSD e com pouca RAM.' $false) {
+    if ($ehHD) {
+        Write-Log '  - SysMain (Superfetch) mantido: ele acelera a abertura de programas em HD mecânico'
+    } elseif (Confirm-Acao 'Desativar o SysMain (Superfetch)? Em SSD o ganho é pequeno; útil só com pouca RAM.' $false) {
         Set-InicioServico -Nome 'SysMain' -Descricao 'SysMain (Superfetch)' -Modo Disabled
     }
 }
@@ -560,6 +591,61 @@ function Set-PlanoAltoDesempenho {
     }
 }
 
+function Get-ValorFsutil([string]$Comportamento) {
+    $saida = & fsutil.exe behavior query $Comportamento 2>$null | Out-String
+    $m = [regex]::Match($saida, '=\s*(\d+)')
+    if ($m.Success) { return [int]$m.Groups[1].Value }
+    return $null
+}
+
+function Set-ValorFsutil([string]$Comportamento, [int]$Valor) {
+    $atual = Get-ValorFsutil $Comportamento
+    if ($atual -eq $Valor) { return }
+    if ($Simular) { Write-Log "  [simulação] fsutil behavior set $Comportamento $Valor"; return }
+    if ($null -ne $atual) { Add-Backup @{ Kind = 'Fsutil'; Path = 'behavior'; Name = $Comportamento; Value = $atual } }
+    & fsutil.exe behavior set $Comportamento $Valor | Out-Null
+}
+
+function Invoke-OtimizacaoDisco {
+    $tipo = Get-TipoDiscoSistema
+    Write-Log "[Disco] Disco do sistema: $(Get-NomeTipoDisco)" 'TITULO'
+
+    # Não grava a data de "último acesso" a cada arquivo lido (menos escrita no disco)
+    Set-ValorFsutil 'disablelastaccess' 1
+    # Windows Update baixa atualizações só da Microsoft/rede local (não envia para a internet)
+    Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode' 1
+    Write-Log '  + Registro de último acesso e envio P2P de atualizações desativados' 'OK'
+
+    if ($tipo -eq 'HDD') {
+        # Prefetch/SysMain ajudam MUITO em HD: carregam os programas mais usados antes.
+        Set-Reg 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' 'EnablePrefetcher' 3
+        $caminho = 'HKLM:\SYSTEM\CurrentControlSet\Services\SysMain'
+        $inicio = (Get-ItemProperty -Path $caminho -Name Start -ErrorAction SilentlyContinue).Start
+        if ($inicio -eq 4 -and -not $Simular) {
+            Backup-ValorRegistro $caminho 'Start'
+            Set-Service -Name SysMain -StartupType Automatic -ErrorAction SilentlyContinue
+            Start-Service -Name SysMain -ErrorAction SilentlyContinue
+            Write-Log '  + SysMain estava desativado e foi reativado' 'OK'
+        }
+        Write-Log '  + Prefetch/SysMain ativos (aceleram programas no HD)' 'OK'
+    } elseif ($tipo -eq 'SSD') {
+        Set-ValorFsutil 'DisableDeleteNotify' 0
+        Write-Log '  + TRIM ativado' 'OK'
+    }
+
+    $pergunta = 'Otimizar a unidade agora (desfragmentar HD / TRIM no SSD)?'
+    if ($tipo -eq 'HDD') { $pergunta = 'Desfragmentar o HD agora? Pode levar de minutos a mais de uma hora.' }
+    if (Confirm-Acao $pergunta $true) {
+        if ($Simular) {
+            Write-Log "  [simulação] defrag $env:SystemDrive /O"
+        } else {
+            Write-Log '  Otimizando a unidade, aguarde (não desligue o PC)...'
+            & defrag.exe $env:SystemDrive /O /U
+            Write-Log '  + Otimização da unidade concluída' 'OK'
+        }
+    }
+}
+
 function Invoke-RemoverBloatware {
     param([bool]$SemPerguntar = $false)
     Write-Log '[Apps] Procurando aplicativos pré-instalados' 'TITULO'
@@ -614,6 +700,7 @@ function Invoke-Recomendado {
     Invoke-AppsSegundoPlano
     Invoke-EfeitosVisuais
     Invoke-Desempenho
+    Invoke-OtimizacaoDisco
 }
 
 # ---------------------------------------------------------------------------
@@ -621,8 +708,8 @@ function Invoke-Recomendado {
 # ---------------------------------------------------------------------------
 function ConvertTo-ValorRegistro($Entrada) {
     switch ($Entrada.Type) {
-        'Binary'      { return [byte[]]@($Entrada.Value) }
-        'MultiString' { return [string[]]@($Entrada.Value) }
+        'Binary'      { return ,([byte[]]@($Entrada.Value)) }
+        'MultiString' { return ,([string[]]@($Entrada.Value)) }
         'DWord'       { return [int]$Entrada.Value }
         'QWord'       { return [long]$Entrada.Value }
         default       { return [string]$Entrada.Value }
@@ -663,6 +750,9 @@ function Invoke-Restaurar {
                 'PowerPlan' {
                     & powercfg.exe /setactive $e.Value
                 }
+                'Fsutil' {
+                    & fsutil.exe behavior set $e.Name $e.Value | Out-Null
+                }
             }
         } catch {
             Write-Log "  ! $($e.Kind) $($e.Path)\$($e.Name): $($_.Exception.Message)" 'AVISO'
@@ -688,12 +778,13 @@ function Show-Cabecalho {
     Write-Host '=================================================================' -ForegroundColor Cyan
     Write-Host (" Sistema   : {0} (build {1})" -f $so.Caption, $so.BuildNumber)
     Write-Host (" Memória   : {0} GB  |  Processos em execução: {1}" -f $ramGB, $processos)
+    Write-Host (" Disco     : {0}" -f (Get-NomeTipoDisco))
     if ($Simular) { Write-Host ' MODO SIMULAÇÃO: nenhuma alteração será feita.' -ForegroundColor Yellow }
     Write-Host '-----------------------------------------------------------------' -ForegroundColor Cyan
 }
 
 function Show-Menu {
-    Write-Host '  [1]  Otimização RECOMENDADA (itens 2 a 8)' -ForegroundColor Green
+    Write-Host '  [1]  Otimização RECOMENDADA (itens 2 a 9)' -ForegroundColor Green
     Write-Host '  [2]  Limpeza de arquivos temporários'
     Write-Host '  [3]  Desativar serviços desnecessários'
     Write-Host '  [4]  Telemetria e privacidade'
@@ -701,8 +792,9 @@ function Show-Menu {
     Write-Host '  [6]  Bloquear apps em segundo plano'
     Write-Host '  [7]  Efeitos visuais para desempenho'
     Write-Host '  [8]  Ajustes de desempenho (energia, svchost, jogos)'
-    Write-Host '  [9]  Remover aplicativos pré-instalados (bloatware)'
-    Write-Host '  [10] Ver programas que iniciam com o Windows'
+    Write-Host '  [9]  Otimização de disco (detecta HD mecânico / SSD)'
+    Write-Host '  [10] Remover aplicativos pré-instalados (bloatware)'
+    Write-Host '  [11] Ver programas que iniciam com o Windows'
     Write-Host '  [R]  Restaurar configurações originais' -ForegroundColor Yellow
     Write-Host '  [0]  Sair'
     Write-Host '-----------------------------------------------------------------' -ForegroundColor Cyan
@@ -756,8 +848,9 @@ do {
         '6'  { Invoke-ComPontoRestauracao { Invoke-AppsSegundoPlano } }
         '7'  { Invoke-ComPontoRestauracao { Invoke-EfeitosVisuais } }
         '8'  { Invoke-ComPontoRestauracao { Invoke-Desempenho } }
-        '9'  { Invoke-ComPontoRestauracao { Invoke-RemoverBloatware } }
-        '10' { Show-Inicializacao }
+        '9'  { Invoke-ComPontoRestauracao { Invoke-OtimizacaoDisco } }
+        '10' { Invoke-ComPontoRestauracao { Invoke-RemoverBloatware } }
+        '11' { Show-Inicializacao }
         'R'  {
             if (Confirm-Acao 'Restaurar todas as configurações alteradas por este script?' $false) { Invoke-Restaurar }
         }
