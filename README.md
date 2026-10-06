@@ -113,3 +113,18 @@ O script não entra em atalhos de pasta (junções e links simbólicos), para nu
 - As listas de serviços, aplicativos removidos e programas do pós-formatação ficam no início de cada script e podem ser editadas.
 - As alterações de usuário (efeitos visuais, anúncios etc.) valem para a conta que confirmou a permissão de administrador. Rode logado na conta do cliente.
 - Com a indexação desativada, a busca do Outlook fica mais lenta. Se o cliente depende disso, responda "N" na pergunta.
+
+## Busca de leads (Google Places)
+
+O `leads/buscar_leads.py` busca comércios locais na Google Places API (New), pela Text Search, e salva Nome, Telefone, Endereço, Website e Nota em `leads_locais.csv`.
+
+1. No Google Cloud, ative a **Places API (New)** e crie uma chave de API.
+2. Instale a dependência e rode:
+
+```bash
+pip install -r leads/requirements.txt
+export GOOGLE_PLACES_API_KEY="sua-chave"     # no PowerShell: $env:GOOGLE_PLACES_API_KEY="sua-chave"
+python leads/buscar_leads.py "padaria em Eldorado, Contagem"
+```
+
+Sem o termo, o script pergunta. Opções: `-o arquivo.csv`, `-m 20` (máximo de resultados, até 60, o limite da API) e `--separador ,`. O CSV sai em UTF-8 com BOM e separado por `;`, para abrir direto no Excel em português.
