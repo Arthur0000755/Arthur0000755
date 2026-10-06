@@ -12,6 +12,7 @@ echo   [2] Otimizar o Windows
 echo   [3] Reparar o Windows (SFC, DISM, disco, Update, rede)
 echo   [4] Pos-formatacao (instalar e atualizar programas)
 echo   [5] Otimizacao para jogos (com medicao de FPS)
+echo   [6] Limpeza profunda (temporarios, logs, cache de atualizacoes, lixeira)
 echo   [0] Sair
 echo -----------------------------------------------------------------
 set "opcao="
@@ -22,6 +23,7 @@ if "%opcao%"=="2" call :executar Otimizar-Windows.ps1
 if "%opcao%"=="3" call :executar Reparar-Windows.ps1
 if "%opcao%"=="4" call :executar Pos-Formatacao.ps1
 if "%opcao%"=="5" call :executar Otimizar-Jogos.ps1
+if "%opcao%"=="6" call :executar Limpeza-Profunda.ps1
 if "%opcao%"=="0" exit /b
 goto menu
 

@@ -23,6 +23,7 @@ powershell -ExecutionPolicy Bypass -File .\Otimizar-Windows.ps1
 | `Reparar-Windows.ps1` | DISM + SFC, CHKDSK, reset do Windows Update, reset de rede e troca de DNS | Sim |
 | `Pos-Formatacao.ps1` | Instala programas pelo winget e atualiza todos de uma vez | Sim |
 | `Otimizar-Jogos.ps1` | Verifica o que limita o FPS, aplica ajustes para jogos e **mede o FPS antes e depois** | Sim, e é reversível |
+| `Limpeza-Profunda.ps1` | Remove temporários, logs antigos, cache do Windows Update e Lixeira, com log detalhado | Sim (apaga arquivos) |
 
 ### Fluxo sugerido para um cliente
 
@@ -60,6 +61,32 @@ Seja honesto com o cliente: os ajustes do Windows costumam dar de 0 a 10% de FPS
 - Dual channel
 - Driver de vídeo atualizado
 - No notebook, jogar na tomada e na placa dedicada
+
+## Limpeza profunda
+
+O `Limpeza-Profunda.ps1` sempre limpa:
+
+- Temporários de todos os usuários e do Windows, só os com mais de 24 h, para não atrapalhar uma instalação em andamento
+- Logs com mais de 30 dias e relatórios de erro
+- Cache do Windows Update e da Otimização de Entrega
+- Lixeira de todas as unidades
+
+Ele pergunta antes de remover:
+
+- Dumps de tela azul
+- Cache dos navegadores. Não apaga senhas nem histórico, e só roda com os navegadores fechados
+- Limpeza de componentes com DISM
+- Pasta `Windows.old`
+
+No fim, mostra quanto foi liberado em cada categoria. O log vai para `C:\ProgramData\OtimizadorWindows\limpeza-*.txt`.
+
+O script não entra em atalhos de pasta (junções e links simbólicos), para nunca apagar algo fora da pasta limpa. Ele também não mexe no Prefetch nem nos Logs de Eventos.
+
+```powershell
+.\Limpeza-Profunda.ps1 -Simular                              # só calcula quanto liberaria
+.\Limpeza-Profunda.ps1 -SemPerguntas -IncluirDism            # automático
+.\Limpeza-Profunda.ps1 -DiasLogs 7 -HorasTemp 0 -LogDetalhado # mais agressivo, loga cada arquivo
+```
 
 ## Segurança e como desfazer
 
